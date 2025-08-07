@@ -15,12 +15,50 @@ from langchain.llms import Ollama
 from langchain.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langgraph.graph import StateGraph, END
+import pandas as pd
+
 
 # Logging setup
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# State for LangGraph
+# Define weights
+WEIGHT_MAP = {
+    "high": 1.5,
+    "medium": 1.0,
+    "low": 0.5
+}
+
+# Predefined regulatory questions
+BASE_REGULATORY_QUESTIONS = {
+    "Loan Agreement": [
+        {"requirement": "As complaints received against NBFCs generally pertain to charging of high interest/penal charges, NBFCs shall mention the penalties charged for late repayment in bold in the loan agreement.", "weight": "high"},
+        {"requirement": "Penalty, if charged, for non-compliance of material terms and conditions of loan contract by the borrower shall be treated as ‘penal charges’. Material terms and conditions to be defined in the loan agreement. Penal charges to be defined in a Board approved policy.", "weight": "medium"},
+        {"requirement": "The quantum and reason for penal charges shall be clearly disclosed to the customers in the loan agreement and most important terms & conditions/Key Fact Statement (KFS).", "weight": "medium"},
+        {"requirement": "Ensure that changes in interest rates and charges are affected only prospectively. A suitable condition in this regard must be incorporated in the loan agreement.", "weight": "high"},
+        {"requirement": "Decision to recall/accelerate payment or performance under the agreement shall be in consonance with the loan agreement.", "weight": "low"},
+        {"requirement": "Release all securities on repayment of all dues or on realisation of the outstanding amount of loan subject to any legitimate right or lien for any other claim they may have against the borrower. If such right of set off is to be exercised, the borrower shall be given notice about the same with full particulars about the remaining claims and the conditions. (Suitable clause to be added in the loan agreement).", "weight": "medium"},
+        {"requirement": "SMA/NPA classification along with the exact due dates for repayment of a loan, frequency of repayment, breakup between principal, interest and examples of SMA/NPA classifications should be specifically mentioned in the Loan agreement.", "weight": "medium"},
+        {"requirement": "Interest Rate Model: Adopt an interest rate model taking into account relevant factors such as cost of funds, margin and risk premium and determine the rate of interest to be charged for loans and advances. The rate of interest and the approach for gradations of risk and rationale for charging different rate of interest to different categories of borrowers shall be disclosed to the borrower or customer in the application form and communicated explicitly in the sanction letter. The rate of interest must be annualised rate so that the borrower is aware of the exact rates that would be charged to the account.", "weight": "high"},
+        {"requirement": "Annual Percentage Rate (APR) shall be disclosed upfront and shall also be a part of the Key Fact Statement.", "weight": "high"},
+        {"requirement": "The possible impact of change in benchmark interest rate on the loan leading to changes in EMI and/or tenor or both.", "weight": "medium"},
+        {"requirement": "The loan agreement with the borrower shall contain clauses for conduct of audit (as defined in ) at the behest of lender(s). In cases where the audit report submitted remains inconclusive or is delayed due to non-cooperation by the borrower, Applicable NBFCs shall conclude on status of the account as a fraud or otherwise based on the material available on their record and their own internal investigation / assessment in such cases.(Per MD on Fraud Risk Management in NBFC).", "weight": "medium"},
+        {"requirement": "Treatment of Wilful Defaulter and Large Defaulter: Incorporation of covenant: (i) The lender shall incorporate a covenant in the agreement while extending credit facility to a borrower that it shall not induct a person whose name appears in the LWD on its board or as a person in charge and responsible for the management of the affairs of the entity. (ii) In case such a person is found to be on its board or as a person in charge and responsible for the management of the affairs of the entity, the borrower would take expeditious and effective steps for removal of such a person from the board or from being in charge of its management. (iii) Under no circumstances shall a lender renew/ enhance/ provide fresh credit facilities or restructure existing facilities provided to such a borrower so long as the name of its promoter and/or the director (s) and/or the person in charge and responsible for the management of the affairs of the entity remains in the LWD.", "weight": "high"},
+        {"requirement": "Repossession of vehicles financed: Must have a built-in re-possession clause in the contract/loan agreement with the borrower which must be legally enforceable. To ensure transparency, the terms and conditions of the contract/loan agreement shall also contain provisions regarding: (i) Notice period before taking possession; (ii) Circumstances under which the notice period can be waived; (iii) The procedure for taking possession of the security; (iv) A provision regarding final chance to be given to the borrower for repayment of loan before the sale/ auction of the property; (v) The procedure for giving repossession to the borrower; and (vi) The procedure for sale/auction of the property.", "weight": "medium"},
+        {"requirement": "Repossession of vehicles financed: A copy of such terms and conditions must be made available to the borrower. NBFCs shall invariably furnish a copy of the loan agreement along with a copy each of all enclosures quoted in the loan agreement to all the borrowers at the time of sanction/ disbursement of loans, which forms a key component of such contracts/ loan agreements.", "weight": "medium"},
+        {"requirement": "Details of grievance redressal officer (GRO).", "weight": "low"},
+        {"requirement": "Customer consent for transactional/promotional SMS or Voice call (a suitable clause to be added in T & C).", "weight": "low"}
+    ],
+    "KFS": [
+        {"requirement": "Ensure KFS is provided with a unique proposal number.", "weight": "medium"},
+        {"requirement": "Include data fields as per KFS format: Type of loan, Sanctioned Loan, Disbursal Schedule, Installment details, Interest rate (%) and type (fixed or floating or hybrid), Additional Information in case of Floating rate of interest, Fee/Charges, Annual Percentage Rate (APR), Details of Contingent Charges and Part 2 (Other qualitative information).", "weight": "high"},
+        {"requirement": "The quantum and reason for penal charges shall be clearly disclosed to the customers in the loan agreement and most important terms & conditions/Key Fact Statement (KFS).", "weight": "high"},
+        {"requirement": "Annual Percentage Rate (APR) shall be disclosed upfront and shall also be a part of the Key Fact Statement.", "weight": "high"},
+        {"requirement": "Cooling Off Period to be defined.", "weight": "medium"},
+        {"requirement": "Penal charges to be mentioned in Bold.", "weight": "high"},
+        {"requirement": "Repayment Schedule has to be provided to the borrower along with the dates of the repayment.", "weight": "medium"}
+    ]
+}
 class GraphState(TypedDict):
     question: str
     context: str
@@ -28,19 +66,12 @@ class GraphState(TypedDict):
     response: str
     retriever: object
 
-# Load questions from JSON
-def load_questions(filepath: str) -> List[dict]:
-    with open(filepath, 'r') as f:
-        return json.load(f)
-
-# Load and split PDF
 def load_and_split_pdf(file_path: str):
     loader = PyPDFLoader(file_path)
     documents = loader.load()
     splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
     return splitter.split_documents(documents)
 
-# Store chunks in Qdrant
 def store_embeddings(chunks):
     embeddings = OllamaEmbeddings(model="nomic-embed-text")
     qdrant = Qdrant.from_documents(
@@ -51,13 +82,45 @@ def store_embeddings(chunks):
     )
     return qdrant
 
-# Node: retrieve
 def retrieve_node(state: GraphState):
     docs = state["retriever"].similarity_search(state["question"], k=5)
     context = "\n\n".join([doc.page_content for doc in docs])
     return {**state, "docs": docs, "context": context}
 
-# Node: generate response
+
+
+def verify_loan_document(file_path: str) -> bool:
+    loader = PyPDFLoader(file_path)
+    pages = loader.load()
+
+    # Extract first 2–3 pages or chunks (adjust based on chunk length)
+    sample_texts = [page.page_content for page in pages[:3]]
+    joined_text = "\n\n".join(sample_texts)
+
+    prompt_template = """
+You are an expert legal document classifier.
+
+Your task is to read the given document content and determine if it is a **Loan Agreement**.
+
+Here is the content:
+
+---
+{content}
+---
+
+Does this document appear to be a **Loan Agreement**?
+
+Answer only YES or NO.
+"""
+
+    prompt = PromptTemplate.from_template(prompt_template)
+    llm = Ollama(model="llama3:8b", temperature=0)
+    chain = prompt | llm | StrOutputParser()
+
+    response = chain.invoke({"content": joined_text}).strip().lower()
+    return "yes" in response
+
+
 def generate_node(state: GraphState):
     llm = Ollama(model="llama3:8b", temperature=0)
     template = """
@@ -80,34 +143,44 @@ Reason: [Brief reasoning]
     result = chain.invoke({"question": state["question"], "context": state["context"]})
     return {**state, "response": result}
 
-def process_files(agreement_file, questions_file):
-    """Process uploaded files and return compliance results"""
-    # Create temporary files
+def calculate_confidence(results):
+    total_score = 0
+    max_score = 0
+    for r in results:
+        weight = WEIGHT_MAP.get(r["Weight"], 1.0)
+        max_score += weight
+        compliance = r["Compliance"].strip().lower()
+        if "✅" in compliance:
+            total_score += weight
+        elif "⚠️" in compliance:
+            total_score += weight * 0.5
+    confidence_percent = (total_score / max_score) * 100 if max_score else 0
+    return round(confidence_percent, 2)
+
+def process_files(agreement_file, questions):
     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as temp_pdf:
         temp_pdf.write(agreement_file.getvalue())
         temp_pdf_path = temp_pdf.name
 
-    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as temp_json:
-        temp_json.write(questions_file.getvalue())
-        temp_json_path = temp_json.name
+    
+
+    
+
+
 
     try:
-        # Step 1: Load & chunk PDF
+
+        is_valid = verify_loan_document(temp_pdf_path)
+        if not is_valid:
+            raise ValueError("The uploaded document does not appear to be a Loan Agreement.")
+
+
         chunks = load_and_split_pdf(temp_pdf_path)
         logger.info(f"🔹 Loaded and split PDF into {len(chunks)} chunks")
 
-        # Step 2: Embed in Qdrant
         qdrant = store_embeddings(chunks)
         logger.info(f"🔹 Chunks embedded and indexed in Qdrant")
 
-        # Step 3: Load questions
-        questions_raw = load_questions(temp_json_path)
-        if isinstance(questions_raw, dict) and "questions" in questions_raw:
-            questions = questions_raw["questions"]
-        else:
-            questions = questions_raw
-
-        # Step 4: Setup LangGraph
         builder = StateGraph(GraphState)
         builder.add_node("retrieve", retrieve_node)
         builder.add_node("generate", generate_node)
@@ -116,116 +189,147 @@ def process_files(agreement_file, questions_file):
         builder.add_edge("generate", END)
         graph = builder.compile()
 
-        # Step 5: Process each question
         results = []
-        for q in questions:
-            if isinstance(q, str):
-                requirement = q
-                keywords = []
-            elif isinstance(q, dict):
-                requirement = q.get("requirement", "")
-                keywords = q.get("keywords", [])
-            else:
-                continue
-
+        for item in questions:
+            requirement = item["requirement"]
+            weight = item["weight"]
             logger.info(f"🔍 Processing: {requirement}")
             result = graph.invoke({"question": requirement, "retriever": qdrant})
-
-            # Extract parts
             resp = result["response"]
             first_line = resp.splitlines()[0].strip()
             reason = "\n".join(resp.splitlines()[1:]).strip()
             context = result["context"]
-
             results.append({
                 "Requirement": requirement,
                 "Compliance": first_line,
-                "Response": resp,
                 "Reason": reason,
-                "Chunks": context
+                "Chunks": context,
+                "Weight": weight
             })
 
-        return results
+        confidence = calculate_confidence(results)
+        return results, confidence
 
     except Exception as e:
         logger.error(f"Error processing files: {str(e)}")
         raise e
     finally:
-        # Clean up temporary files
-        for path in [temp_pdf_path, temp_json_path]:
-            try:
-                if path and os.path.exists(path):
-                    os.unlink(path)
-            except:
-                pass
+        if temp_pdf_path and os.path.exists(temp_pdf_path):
+            os.unlink(temp_pdf_path)
 
-# Streamlit UI
 def main():
-    # Page config
     st.set_page_config(page_title="Compliance Validator", layout="wide")
 
-    # Title
-    st.title("Loan Agreement Compliance Validator")
+    st.markdown("""
+        <style>
+        .block-container {
+            padding-top: 2rem;
+            padding-bottom: 2rem;
+        }
+        .stMarkdown {
+            margin-bottom: 1rem;
+        }
+        </style>
+    """, unsafe_allow_html=True)
 
-    # Document type selection
-    doc_type = st.selectbox(
-        "Select Document Type",
-        ["Loan Agreement", "KFS", "Application Form", "Sanction Letter"],
-        index=0
-    )
+    st.title("📑 Loan Document Compliance Checker")
 
-    # File upload sections
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.subheader(f"Upload {doc_type}")
-        agreement_file = st.file_uploader(
-            "Upload PDF file", 
-            type=["pdf"],
-            key="agreement"
+    with st.sidebar:
+        st.header("📁 Settings")
+        doc_type = st.selectbox("Select Document Type", list(BASE_REGULATORY_QUESTIONS.keys()))
+        default_questions = BASE_REGULATORY_QUESTIONS.get(doc_type, [])
+
+        st.markdown("### 🛠️ Weight Presets")
+        selected_bulk_weight = st.selectbox("Set All Weights To", ["Do not change", "high", "medium", "low"])
+        if selected_bulk_weight != "Do not change" and "reg_df" in st.session_state:
+            st.session_state.reg_df.loc[st.session_state.reg_df["use"], "weight"] = selected_bulk_weight
+
+        st.markdown("### 🗂️ Requirement Controls")
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("✅ Select All"):
+                if "reg_df" in st.session_state:
+                    st.session_state.reg_df["use"] = True
+        with col2:
+            if st.button("🚫 Deselect All"):
+                if "reg_df" in st.session_state:
+                    st.session_state.reg_df["use"] = False
+
+    # Initialize editable DataFrame
+    # Initialize or update regulatory requirements table if doc_type changes
+    if "selected_doc_type" not in st.session_state or st.session_state.selected_doc_type != doc_type:
+        st.session_state.selected_doc_type = doc_type
+        st.session_state.reg_df = pd.DataFrame(default_questions)
+        st.session_state.reg_df["use"] = True
+
+
+    st.markdown("## 📜 Regulatory Requirements")
+    with st.expander("📝 Review / Edit Requirements", expanded=False):
+        edited_df = st.data_editor(
+            st.session_state.reg_df,
+            use_container_width=True,
+            num_rows="dynamic",
+            column_config={
+                "requirement": st.column_config.TextColumn("Requirement"),
+                "weight": st.column_config.SelectboxColumn("Weight", options=["high", "medium", "low"]),
+                "use": st.column_config.CheckboxColumn("Use")
+            }
         )
-    
-    with col2:
-        st.subheader("Upload Regulatory Requirements")
-        questions_file = st.file_uploader(
-            "Upload JSON file", 
-            type=["json"],
-            key="questions"
-        )
+        st.session_state.reg_df = edited_df  # Update session state
 
-    # Evaluate button
-    if st.button("Evaluate Compliance", type="primary"):
-        if agreement_file is None or questions_file is None:
-            st.error("Please upload both files before evaluating")
+    editable_questions = edited_df[edited_df["use"]].to_dict(orient="records")
+
+    st.markdown("---")
+    st.markdown("## 📤 Upload Loan Agreement")
+
+    agreement_file = st.file_uploader("Upload your loan agreement PDF", type=["pdf"], help="Only PDF format is supported.")
+
+    st.markdown("---")
+    st.markdown("## ✅ Compliance Evaluation")
+
+
+    if st.button("🚀 Run Compliance Check"):
+        if not agreement_file:
+            st.error("🚫 Please upload the document first.")
+            return
+        if not editable_questions:
+            st.error("🚫 No regulatory requirements selected.")
             return
 
-        with st.spinner("Processing documents..."):
+        with st.spinner("🔄 Processing document and evaluating compliance..."):
             try:
-                results = process_files(agreement_file, questions_file)
-                
-                if results:
-                    st.success("Evaluation completed successfully!")
-                    
-                    # Convert results to DataFrame
-                    df = pd.DataFrame(results)
-                    
-                    # Show results table
-                    st.subheader("Compliance Results")
-                    st.dataframe(df)
-                    
-                    # Create download button
-                    csv = df.to_csv(index=False).encode('utf-8')
-                    st.download_button(
-                        label="Download Results as CSV",
-                        data=csv,
-                        file_name="compliance_results.csv",
-                        mime="text/csv"
-                    )
-                else:
-                    st.warning("No results were generated")
-            
+                results, confidence = process_files(agreement_file, editable_questions)
+                df = pd.DataFrame(results)
+
+                st.success("✅ Compliance Evaluation Complete")
+
+                # Use a container for proper spacing
+                with st.container():
+                    st.markdown("## 📊 Results Overview")
+
+                    # Use columns for metric and button
+                    metric_col, button_col = st.columns([2, 1])
+                    with metric_col:
+                        st.metric("📈 Overall Compliance Score", f"{confidence}%")
+
+                    with button_col:
+                        csv = df.to_csv(index=False).encode("utf-8")
+                        st.download_button("⬇️ Download Results", csv, "compliance_results.csv", "text/csv")
+
+                    st.markdown("---")
+                    with st.expander("📄 View Detailed Results", expanded=True):
+                        st.dataframe(df, use_container_width=True)
+
             except Exception as e:
-                st.error(f"An error occurred during processing: {str(e)}")
+
+                if "Loan Agreement" in str(e):
+                    st.error("❌ This doesn't appear to be a valid Loan Agreement. Please upload the correct document.")
+                else:
+                    st.error(f"❌ An error occurred: {e}")
+
+                
+
+
 
 if __name__ == "__main__":
     main()
