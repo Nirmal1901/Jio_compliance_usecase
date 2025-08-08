@@ -275,7 +275,9 @@ def main():
                 "use": st.column_config.CheckboxColumn("Use")
             }
         )
-        st.session_state.reg_df = edited_df  # Update session state
+        # Ensure no NA values in 'use' column
+        edited_df["use"] = edited_df["use"].fillna(False)
+    st.session_state.reg_df = edited_df  # Update session state
 
     editable_questions = edited_df[edited_df["use"]].to_dict(orient="records")
 
@@ -328,8 +330,5 @@ def main():
                     st.error(f"❌ An error occurred: {e}")
 
                 
-
-
-
 if __name__ == "__main__":
     main()
